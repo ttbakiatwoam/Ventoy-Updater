@@ -28,6 +28,8 @@ type options struct {
 	noDelete     bool
 	cleanup      bool
 	jsonLog      bool
+	allowSkips   bool
+	summaryPath  string
 	timeout      time.Duration
 	retries      int
 }
@@ -69,6 +71,14 @@ func run(args []string, stdout, stderr io.Writer) error {
 	}
 	logger := logging.New(stderr, opts.jsonLog)
 
+	ctx := context.Background()
+	if command == "validate" {
+		if opts.manifestPath == "" {
+			opts.manifestPath = filepath.Join("examples", "ventoy-update.yaml")
+		}
+		return runValidate(ctx, opts, stdout, logger)
+	}
+
 	target, err := storage.ResolveTarget(opts.target)
 	if err != nil {
 		return err
@@ -80,7 +90,6 @@ func run(args []string, stdout, stderr io.Writer) error {
 		opts.manifestPath = storage.DefaultManifestPath(target)
 	}
 
-	ctx := context.Background()
 	switch command {
 	case "scan":
 		return runScan(ctx, opts, target, stdout, logger)
@@ -99,11 +108,12 @@ func splitCommand(args []string) (string, []string, error) {
 		return "", nil, errors.New("missing command")
 	}
 	commands := map[string]struct{}{
-		"scan":    {},
-		"check":   {},
-		"update":  {},
-		"version": {},
-		"help":    {},
+		"scan":     {},
+		"check":    {},
+		"update":   {},
+		"validate": {},
+		"version":  {},
+		"help":     {},
 	}
 	for i, arg := range args {
 		if _, ok := commands[arg]; ok {
@@ -129,6 +139,8 @@ func parseOptions(args []string, stderr io.Writer) (options, error) {
 	fs.BoolVar(&opts.noDelete, "no-delete", false, "never delete files")
 	fs.BoolVar(&opts.cleanup, "cleanup", false, "remove macOS metadata and stale staging files")
 	fs.BoolVar(&opts.jsonLog, "json-log", false, "emit JSON logs")
+	fs.BoolVar(&opts.allowSkips, "allow-skips", false, "allow providers that cannot expose machine-readable metadata")
+	fs.StringVar(&opts.summaryPath, "summary", "", "append a Markdown validation summary to this path")
 	fs.StringVar(&timeout, "timeout", "90s", "per-request timeout")
 	fs.IntVar(&opts.retries, "retries", 2, "network retry count")
 	if err := fs.Parse(args); err != nil {
@@ -146,7 +158,7 @@ func parseOptions(args []string, stderr io.Writer) (options, error) {
 }
 
 func printUsage(w io.Writer) {
-	fmt.Fprintln(w, "usage: ventoy-update [flags] <scan|check|update>")
+	fmt.Fprintln(w, "usage: ventoy-update [flags] <scan|check|update|validate>")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "common flags:")
 	fmt.Fprintln(w, "  --target PATH       Ventoy image volume path; defaults to /Volumes/Ventoy on macOS")
@@ -157,6 +169,8 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  --no-delete         Never delete files")
 	fmt.Fprintln(w, "  --cleanup           Remove macOS metadata and stale staging files")
 	fmt.Fprintln(w, "  --json-log          Emit structured JSON logs to stderr")
+	fmt.Fprintln(w, "  --allow-skips       Allow validation skips for HTML-only providers")
+	fmt.Fprintln(w, "  --summary PATH      Append a Markdown validation summary")
 }
 
 func runScan(ctx context.Context, opts options, target string, stdout io.Writer, logger *logging.Logger) error {

@@ -1,5 +1,8 @@
 # ventoy-update
 
+**License:** [Creative Commons Attribution-ShareAlike 4.0 International](LICENSE.txt)  
+**Last validation result:** [![PR Validation](https://github.com/ttbakiatwoam/Ventoy-Updater/actions/workflows/pr-validation.yml/badge.svg)](https://github.com/ttbakiatwoam/Ventoy-Updater/actions/workflows/pr-validation.yml)
+
 `ventoy-update` is a manifest-driven updater for a Ventoy USB image partition.
 It scans the existing image set, checks upstream releases, and downloads updates
 transactionally with checksum verification before replacing anything.
@@ -24,6 +27,13 @@ release feed.
 Windows installer ISOs and custom WinPE images are treated as manual-only. They
 are scanned into the manifest but never updated automatically.
 
+## Provider Contributions
+
+Pull requests targeting the `master` branch are welcome when adding a new
+provider and supported ISO file. A provider PR should include filename
+detection, release metadata resolution from an official upstream source,
+checksum verification, manifest/example updates, and focused provider tests.
+
 ## Build
 
 ```bash
@@ -39,6 +49,7 @@ provided.
 ./ventoy-update scan
 ./ventoy-update check
 ./ventoy-update update
+./ventoy-update validate --manifest examples/ventoy-update.yaml
 ```
 
 With an explicit target:
@@ -57,9 +68,12 @@ With an explicit target:
 - `--no-delete`: never delete old image files or stale tool files.
 - `--cleanup`: remove macOS metadata files and old staging files.
 - `--json-log`: emit structured JSON logs to stderr.
-- `--timeout 30s`: per-request timeout.
+- `--timeout 90s`: per-request timeout.
 - `--retries 3`: retry count for transient network failures.
 - `--manifest path`: override the manifest path.
+- `--summary path`: append a Markdown validation summary.
+- `--allow-skips`: allow validation skips for providers without machine-readable
+  metadata.
 
 ## Safety Model
 
@@ -106,6 +120,20 @@ manifests with the same field names.
 - GParted and Clonezilla use project checksum files linked from official pages.
 - Pop!_OS and Hiren's BootCD PE use their official download pages for release
   metadata because no stable checksum manifest endpoint is currently published.
+
+## PR Validation
+
+Pull requests run `.github/workflows/pr-validation.yml`. The workflow builds the
+CLI, runs the Go test suite, and runs:
+
+```bash
+./ventoy-update validate --manifest examples/ventoy-update.yaml --timeout 90s
+```
+
+The validation command resolves each managed provider from the manifest,
+confirms release filenames and checksums are present, and probes each ISO or IMG
+URL with `HEAD` only. It does not download image bodies. Windows installer ISOs
+and custom WinPE images stay manual-only and are reported as `MANUAL`.
 
 ## Local Verification
 

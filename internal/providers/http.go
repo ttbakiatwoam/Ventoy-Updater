@@ -19,6 +19,15 @@ type HTTPClient struct {
 	Logger  *logging.Logger
 }
 
+type ProbeResult struct {
+	URL           string
+	FinalURL      string
+	Status        string
+	StatusCode    int
+	ContentLength int64
+	ContentType   string
+}
+
 func NewHTTPClient(timeout time.Duration, retries int, logger *logging.Logger) *HTTPClient {
 	if timeout <= 0 {
 		timeout = 90 * time.Second
@@ -66,6 +75,27 @@ func (c *HTTPClient) GetText(ctx context.Context, rawURL string, limit int64) (s
 
 func (c *HTTPClient) Head(ctx context.Context, rawURL string) (*http.Response, error) {
 	return c.Do(ctx, http.MethodHead, rawURL, nil, nil)
+}
+
+func (c *HTTPClient) ProbeDownload(ctx context.Context, rawURL string) (ProbeResult, error) {
+	resp, err := c.Head(ctx, rawURL)
+	if err != nil {
+		return ProbeResult{URL: rawURL}, err
+	}
+	defer resp.Body.Close()
+
+	finalURL := rawURL
+	if resp.Request != nil && resp.Request.URL != nil {
+		finalURL = resp.Request.URL.String()
+	}
+	return ProbeResult{
+		URL:           rawURL,
+		FinalURL:      finalURL,
+		Status:        resp.Status,
+		StatusCode:    resp.StatusCode,
+		ContentLength: resp.ContentLength,
+		ContentType:   resp.Header.Get("Content-Type"),
+	}, nil
 }
 
 func (c *HTTPClient) Do(ctx context.Context, method, rawURL string, headers map[string]string, body []byte) (*http.Response, error) {
