@@ -1208,7 +1208,11 @@ func (Hirens) Latest(ctx context.Context, client *HTTPClient, image config.Image
 		base, _ := url.Parse("https://www.hirensbootcd.org/download/")
 		isoURL = base.ResolveReference(parsed).String()
 	}
-	filename := path.Base(mustURLPath(isoURL))
+	downloadURL, err := hirensDownloadURL(ctx, client, isoURL)
+	if err != nil {
+		return Release{}, err
+	}
+	filename := path.Base(mustURLPath(downloadURL))
 	if filename == "" || filename == "." || filename == "/" {
 		filename = "HBCD_PE_x64.iso"
 	}
@@ -1218,9 +1222,38 @@ func (Hirens) Latest(ctx context.Context, client *HTTPClient, image config.Image
 		Name:         imageName("hirens"),
 		Version:      version,
 		Filename:     filename,
-		URL:          isoURL,
+		URL:          downloadURL,
 		Checksum:     strings.ToLower(checksum),
 		ChecksumType: "sha256",
-		Size:         headSize(ctx, client, isoURL),
+		Size:         headSize(ctx, client, downloadURL),
 	}, nil
+}
+
+func hirensDownloadURL(ctx context.Context, client *HTTPClient, primaryURL string) (string, error) {
+	var lastErr error
+	for _, candidate := range hirensDownloadCandidates(primaryURL) {
+		if _, err := client.ProbeDownload(ctx, candidate); err == nil {
+			return candidate, nil
+		} else {
+			lastErr = err
+		}
+	}
+	return "", Skipf("Hiren's BootCD PE mirrors are not currently reachable without downloading the ISO: %v", lastErr)
+}
+
+func hirensDownloadCandidates(primaryURL string) []string {
+	candidates := []string{primaryURL}
+	for _, candidate := range []string{
+		"https://hirensbootcd.mirror.wearetriple.com/HBCD_PE_x64.iso",
+		"https://hbcd.mirror.garr.it/mirrors/hbcd/HBCD_PE_x64.iso",
+		"https://mirrors.uni-ruse.bg/hirens-bootcd/HBCD_PE_x64.iso",
+		"https://mirror.internet.asn.au/pub/hbcd/HBCD_PE_x64.iso",
+		"https://www2.frugalware.org/mirror/hirensbootcd.org/HBCD_PE_x64.iso",
+		"https://mirror.lstn.net/hirensbootcd/HBCD_PE_x64.iso",
+	} {
+		if candidate != primaryURL {
+			candidates = append(candidates, candidate)
+		}
+	}
+	return candidates
 }

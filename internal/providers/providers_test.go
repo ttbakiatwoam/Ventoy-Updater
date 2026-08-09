@@ -144,6 +144,36 @@ func TestHirensHTMLToTextExposesSHA256(t *testing.T) {
 	}
 }
 
+func TestHirensDownloadURLFallsBackWhenPrimaryMirrorFails(t *testing.T) {
+	primary := "https://www.hirensbootcd.org/files/HBCD_PE_x64.iso"
+	fallback := "https://hirensbootcd.mirror.wearetriple.com/HBCD_PE_x64.iso"
+	client := NewHTTPClient(5*time.Second, 0, nil)
+	client.Client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.String() == primary {
+			return nil, io.ErrUnexpectedEOF
+		}
+		if req.URL.String() != fallback {
+			t.Fatalf("unexpected URL %s", req.URL.String())
+		}
+		return &http.Response{
+			StatusCode:    http.StatusOK,
+			Status:        "200 OK",
+			Header:        http.Header{"Content-Length": []string{"3291686912"}},
+			ContentLength: 3291686912,
+			Body:          io.NopCloser(bytes.NewReader(nil)),
+			Request:       req,
+		}, nil
+	})
+
+	got, err := hirensDownloadURL(context.Background(), client, primary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != fallback {
+		t.Fatalf("download URL = %q, want %q", got, fallback)
+	}
+}
+
 func TestFindGPartedChecksumInSourceForgeText(t *testing.T) {
 	text := `<html><body>
 <h3>SHA256SUMS:</h3>
