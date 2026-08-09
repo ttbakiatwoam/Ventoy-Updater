@@ -1,7 +1,8 @@
 # ventoy-update
 
-**License:** [Creative Commons Attribution-ShareAlike 4.0 International](LICENSE.txt)  
 **Last validation result:** [![PR Validation](https://github.com/ttbakiatwoam/Ventoy-Updater/actions/workflows/pr-validation.yml/badge.svg)](https://github.com/ttbakiatwoam/Ventoy-Updater/actions/workflows/pr-validation.yml)
+
+**License:** [Creative Commons Attribution-ShareAlike 4.0 International](LICENSE.txt)
 
 `ventoy-update` is a manifest-driven updater for a Ventoy USB image partition.
 It scans the existing image set, checks upstream releases, and downloads updates
