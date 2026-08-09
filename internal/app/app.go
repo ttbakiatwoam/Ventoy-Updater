@@ -139,7 +139,7 @@ func parseOptions(args []string, stderr io.Writer) (options, error) {
 	fs.BoolVar(&opts.noDelete, "no-delete", false, "never delete files")
 	fs.BoolVar(&opts.cleanup, "cleanup", false, "remove macOS metadata and stale staging files")
 	fs.BoolVar(&opts.jsonLog, "json-log", false, "emit JSON logs")
-	fs.BoolVar(&opts.allowSkips, "allow-skips", false, "allow providers that cannot expose machine-readable metadata")
+	fs.BoolVar(&opts.allowSkips, "allow-skips", false, "allow provider skips for unavailable metadata or direct ISO links")
 	fs.StringVar(&opts.summaryPath, "summary", "", "append a Markdown validation summary to this path")
 	fs.StringVar(&timeout, "timeout", "90s", "per-request timeout")
 	fs.IntVar(&opts.retries, "retries", 2, "network retry count")
@@ -169,7 +169,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  --no-delete         Never delete files")
 	fmt.Fprintln(w, "  --cleanup           Remove macOS metadata and stale staging files")
 	fmt.Fprintln(w, "  --json-log          Emit structured JSON logs to stderr")
-	fmt.Fprintln(w, "  --allow-skips       Allow validation skips for HTML-only providers")
+	fmt.Fprintln(w, "  --allow-skips       Allow provider skips for unavailable metadata or direct ISO links")
 	fmt.Fprintln(w, "  --summary PATH      Append a Markdown validation summary")
 }
 

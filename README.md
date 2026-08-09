@@ -115,10 +115,14 @@ manifests with the same field names.
 
 - Ubuntu uses `SHA256SUMS` from `releases.ubuntu.com`.
 - Debian uses `SHA512SUMS` from `cdimage.debian.org`.
-- Kali uses `SHA256SUMS` from `kali.download/base-images/current`.
+- Kali uses `SHA256SUMS` from `kali.download/base-images/current`; live
+  images are reported as `SKIP` when Kali exposes only torrent downloads for the
+  current live release.
 - Linux Mint uses `sha256sum.txt` from `pub.linuxmint.io`.
 - Tails uses the official `latest.json` release metadata.
 - GParted and Clonezilla use project checksum files linked from official pages.
+  GParted falls back to the official SourceForge release listing when
+  `gparted.org` blocks checksum access from CI.
 - Pop!_OS and Hiren's BootCD PE use their official download pages for release
   metadata because no stable checksum manifest endpoint is currently published.
 
@@ -136,8 +140,9 @@ confirms release filenames and checksums are present, and probes each ISO or IMG
 URL with `HEAD` first. If a server rejects `HEAD`, it falls back to a one-byte
 range request. It does not download image bodies. Windows installer ISOs and
 custom WinPE images stay manual-only and are reported as `MANUAL`.
-Providers without current machine-readable metadata, such as Pop!_OS, are
-reported as `SKIP` and are allowed by CI only when `--allow-skips` is present.
+Providers without current machine-readable metadata or direct ISO availability,
+such as Pop!_OS or Kali live during torrent-only releases, are reported as
+`SKIP` and are allowed by CI only when `--allow-skips` is present.
 
 ## Local Verification
 

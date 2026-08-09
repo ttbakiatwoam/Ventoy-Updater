@@ -568,7 +568,10 @@ func (Kali) Latest(ctx context.Context, client *HTTPClient, image config.Image) 
 	if !ok {
 		return Release{}, fmt.Errorf("no Kali %s %s image found in %s", flavor, arch, base+"SHA256SUMS")
 	}
-	rawURL := kaliDownloadURL(version, filename)
+	rawURL, err := kaliDownloadURL(ctx, client, version, filename)
+	if err != nil {
+		return Release{}, err
+	}
 	return Release{
 		ImageID:      image.ID,
 		Provider:     "kali",
@@ -582,8 +585,32 @@ func (Kali) Latest(ctx context.Context, client *HTTPClient, image config.Image) 
 	}, nil
 }
 
-func kaliDownloadURL(version, filename string) string {
-	return fmt.Sprintf("https://cdimage.kali.org/kali-%s/%s", url.PathEscape(version), url.PathEscape(filename))
+func kaliDownloadURL(ctx context.Context, client *HTTPClient, version, filename string) (string, error) {
+	var lastErr error
+	for _, candidate := range kaliDownloadCandidates(version, filename) {
+		if _, err := client.ProbeDownload(ctx, candidate); err == nil {
+			return candidate, nil
+		} else {
+			lastErr = err
+		}
+	}
+	if strings.Contains(filename, "-live-") {
+		return "", Skipf("Kali lists %s in SHA256SUMS, but official mirrors currently expose the live image as torrent-only", filename)
+	}
+	return "", fmt.Errorf("Kali lists %s in SHA256SUMS, but no official direct ISO URL responded: %v", filename, lastErr)
+}
+
+func kaliDownloadCandidates(version, filename string) []string {
+	escapedVersion := url.PathEscape(version)
+	escapedFilename := url.PathEscape(filename)
+	return []string{
+		fmt.Sprintf("https://cdimage.kali.org/kali-%s/%s", escapedVersion, escapedFilename),
+		fmt.Sprintf("https://cdimage.kali.org/current/%s", escapedFilename),
+		fmt.Sprintf("https://archive.kali.org/kali-images/kali-%s/%s", escapedVersion, escapedFilename),
+		fmt.Sprintf("https://archive.kali.org/kali-images/current/%s", escapedFilename),
+		fmt.Sprintf("https://kali.download/base-images/kali-%s/%s", escapedVersion, escapedFilename),
+		fmt.Sprintf("https://kali.download/base-images/current/%s", escapedFilename),
+	}
 }
 
 type LinuxMint struct{}
@@ -850,12 +877,12 @@ func (GParted) Latest(ctx context.Context, client *HTTPClient, image config.Imag
 func latestGPartedRelease(ctx context.Context, client *HTTPClient, arch string) (filename, version, checksum string, err error) {
 	text, err := client.GetText(ctx, "https://gparted.org/gparted-live/stable/CHECKSUMS.TXT", manifestLimit)
 	if err != nil {
-		return "", "", "", err
+		return latestGPartedReleaseFromSourceForge(ctx, client, arch, err)
 	}
 	pattern := regexp.MustCompile(fmt.Sprintf(`^gparted-live-([0-9][A-Za-z0-9_.-]+)-%s\.iso$`, regexp.QuoteMeta(arch)))
 	filename, version, checksum, ok := selectChecksumMatchOfType(text, pattern, "sha256")
 	if !ok {
-		return "", "", "", fmt.Errorf("no GParted stable %s ISO found in CHECKSUMS.TXT", arch)
+		return latestGPartedReleaseFromSourceForge(ctx, client, arch, fmt.Errorf("no GParted stable %s ISO found in CHECKSUMS.TXT", arch))
 	}
 	return filename, version, checksum, nil
 }
@@ -889,7 +916,64 @@ func gpartedChecksum(ctx context.Context, client *HTTPClient, filename string) (
 		}
 		lastErr = fmt.Errorf("checksum for %s not found in %s", filename, rawURL)
 	}
-	return "", lastErr
+	match := regexp.MustCompile(`^gparted-live-(.+)-[A-Za-z0-9_]+\.iso$`).FindStringSubmatch(filename)
+	if match != nil {
+		if checksum, err := gpartedChecksumFromSourceForge(ctx, client, match[1], filename); err == nil {
+			return checksum, nil
+		} else {
+			lastErr = err
+		}
+	}
+	return "", Skipf("GParted checksum metadata unavailable for %s: %v", filename, lastErr)
+}
+
+func latestGPartedReleaseFromSourceForge(ctx context.Context, client *HTTPClient, arch string, priorErr error) (filename, version, checksum string, err error) {
+	const sourceForgeStable = "https://sourceforge.net/projects/gparted/files/gparted-live-stable/"
+	text, err := client.GetText(ctx, sourceForgeStable, manifestLimit)
+	if err != nil {
+		return "", "", "", Skipf("GParted stable metadata unavailable: %v; fallback failed: %v", priorErr, err)
+	}
+	pattern := regexp.MustCompile(fmt.Sprintf(`gparted-live-([0-9][A-Za-z0-9_.-]+)-%s\.iso`, regexp.QuoteMeta(arch)))
+	for _, match := range pattern.FindAllStringSubmatch(text, -1) {
+		candidateVersion := match[1]
+		if version == "" || compareVersions(candidateVersion, version) > 0 {
+			version = candidateVersion
+			filename = fmt.Sprintf("gparted-live-%s-%s.iso", version, arch)
+		}
+	}
+	if filename == "" {
+		return "", "", "", Skipf("GParted stable %s ISO was not found in SourceForge fallback after CHECKSUMS.TXT failed: %v", arch, priorErr)
+	}
+	checksum, err = gpartedChecksumFromSourceForge(ctx, client, version, filename)
+	if err != nil {
+		return "", "", "", Skipf("GParted checksum metadata unavailable for %s: %v", filename, err)
+	}
+	return filename, version, checksum, nil
+}
+
+func gpartedChecksumFromSourceForge(ctx context.Context, client *HTTPClient, version, filename string) (string, error) {
+	rawURL := fmt.Sprintf("https://sourceforge.net/projects/gparted/files/gparted-live-stable/%s/", url.PathEscape(version))
+	text, err := client.GetText(ctx, rawURL, manifestLimit)
+	if err != nil {
+		return "", err
+	}
+	if checksum, ok := findChecksumOfType(text, filename, "sha256"); ok {
+		return checksum, nil
+	}
+	if checksum, ok := findGPartedChecksumInSourceForgeText(text, filename); ok {
+		return checksum, nil
+	}
+	return "", fmt.Errorf("sha256 checksum for %s not found in %s", filename, rawURL)
+}
+
+func findGPartedChecksumInSourceForgeText(text, filename string) (string, bool) {
+	text = htmlToText(text)
+	pattern := regexp.MustCompile(`(?i)([a-f0-9]{64})\s+` + regexp.QuoteMeta(filename))
+	match := pattern.FindStringSubmatch(text)
+	if match == nil {
+		return "", false
+	}
+	return strings.ToLower(match[1]), true
 }
 
 type Tails struct{}

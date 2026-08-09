@@ -1,8 +1,15 @@
 package providers
 
 import (
+	"bytes"
+	"context"
+	"io"
+	"net/http"
 	"regexp"
 	"testing"
+	"time"
+
+	"ventoy-update/internal/config"
 )
 
 func TestParseChecksumManifest(t *testing.T) {
@@ -60,11 +67,54 @@ func TestSelectChecksumMatchOfType(t *testing.T) {
 	}
 }
 
-func TestKaliDownloadURLUsesVersionedRedirector(t *testing.T) {
-	got := kaliDownloadURL("2026.2", "kali-linux-2026.2-live-amd64.iso")
-	want := "https://cdimage.kali.org/kali-2026.2/kali-linux-2026.2-live-amd64.iso"
-	if got != want {
-		t.Fatalf("url = %q, want %q", got, want)
+func TestKaliDownloadCandidatesUseOfficialMirrors(t *testing.T) {
+	got := kaliDownloadCandidates("2026.2", "kali-linux-2026.2-installer-amd64.iso")
+	wantFirst := "https://cdimage.kali.org/kali-2026.2/kali-linux-2026.2-installer-amd64.iso"
+	if len(got) == 0 || got[0] != wantFirst {
+		t.Fatalf("candidates = %#v", got)
+	}
+	wantCurrent := "https://cdimage.kali.org/current/kali-linux-2026.2-installer-amd64.iso"
+	foundCurrent := false
+	for _, candidate := range got {
+		if candidate == wantCurrent {
+			foundCurrent = true
+		}
+	}
+	if !foundCurrent {
+		t.Fatalf("current mirror candidate missing from %#v", got)
+	}
+}
+
+func TestKaliLiveTorrentOnlyIsSkipped(t *testing.T) {
+	client := NewHTTPClient(5*time.Second, 0, nil)
+	client.Client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.String() == "https://kali.download/base-images/current/SHA256SUMS" {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Body: io.NopCloser(bytes.NewReader([]byte(
+					"49e90e694d1b3dedd47f94afbe99dfdd5afb41c8462b638bbd332929769c773a  kali-linux-2026.2-live-amd64.iso\n",
+				))),
+				Request: req,
+			}, nil
+		}
+		return &http.Response{
+			StatusCode: http.StatusNotFound,
+			Status:     "404 Not Found",
+			Body:       io.NopCloser(bytes.NewReader(nil)),
+			Request:    req,
+		}, nil
+	})
+
+	_, err := (Kali{}).Latest(context.Background(), client, config.Image{
+		ID:       "kali-live",
+		Provider: "kali",
+		Track:    "current",
+		Arch:     "amd64",
+		Flavor:   "live",
+	})
+	if !IsSkipped(err) {
+		t.Fatalf("expected skip error, got %v", err)
 	}
 }
 
@@ -90,6 +140,21 @@ func TestHirensHTMLToTextExposesSHA256(t *testing.T) {
 	text := htmlToText(html)
 	checksum := firstMatch(text, `(?i)ISO SHA-?256\s*(?:\||:)?\s*([a-f0-9]{64})`, `(?i)SHA-?256[^a-f0-9]+([a-f0-9]{64})`)
 	if checksum != "8c4c670c9c84d6c4b5a9c32e0aa5a55d8c23de851d259207d54679ea774c2498" {
+		t.Fatalf("checksum = %q", checksum)
+	}
+}
+
+func TestFindGPartedChecksumInSourceForgeText(t *testing.T) {
+	text := `<html><body>
+<h3>SHA256SUMS:</h3>
+3f66b2e10b8bb2c573ed6cdd3a9b54fd0a8e7690634ab6b15c3c8f517992d1a1 gparted-live-1.8.1-3-amd64.iso
+0ff36216b1cbdc33575556eec574f018e034976128ee2229b5fc9c358cbf8cae gparted-live-1.8.1-3-amd64.zip
+</body></html>`
+	checksum, ok := findGPartedChecksumInSourceForgeText(text, "gparted-live-1.8.1-3-amd64.iso")
+	if !ok {
+		t.Fatal("expected checksum")
+	}
+	if checksum != "3f66b2e10b8bb2c573ed6cdd3a9b54fd0a8e7690634ab6b15c3c8f517992d1a1" {
 		t.Fatalf("checksum = %q", checksum)
 	}
 }
