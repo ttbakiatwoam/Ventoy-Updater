@@ -129,7 +129,7 @@ func parseOptions(args []string, stderr io.Writer) (options, error) {
 	fs.BoolVar(&opts.noDelete, "no-delete", false, "never delete files")
 	fs.BoolVar(&opts.cleanup, "cleanup", false, "remove macOS metadata and stale staging files")
 	fs.BoolVar(&opts.jsonLog, "json-log", false, "emit JSON logs")
-	fs.StringVar(&timeout, "timeout", "30s", "per-request timeout")
+	fs.StringVar(&timeout, "timeout", "90s", "per-request timeout")
 	fs.IntVar(&opts.retries, "retries", 2, "network retry count")
 	if err := fs.Parse(args); err != nil {
 		return options{}, err
@@ -322,7 +322,11 @@ func resolveManifest(ctx context.Context, opts options, target string, manifest 
 		}
 		release, err := provider.Latest(ctx, client, image)
 		if err != nil {
-			results = append(results, &result{Image: image, Status: "ERROR", Error: err})
+			status := "ERROR"
+			if providers.IsSkipped(err) {
+				status = "SKIP"
+			}
+			results = append(results, &result{Image: image, Status: status, Error: err})
 			continue
 		}
 		status := "CURRENT"
@@ -406,7 +410,7 @@ func truncate(value string, width int) string {
 func resultError(results []*result) error {
 	var messages []string
 	for _, result := range results {
-		if result.Error != nil {
+		if result.Error != nil && !providers.IsSkipped(result.Error) {
 			messages = append(messages, fmt.Sprintf("%s: %v", result.Image.ID, result.Error))
 		}
 	}

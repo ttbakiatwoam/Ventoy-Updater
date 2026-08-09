@@ -1,6 +1,9 @@
 package providers
 
-import "testing"
+import (
+	"regexp"
+	"testing"
+)
 
 func TestParseChecksumManifest(t *testing.T) {
 	text := `
@@ -16,6 +19,47 @@ SHA256 (gparted-live-1.8.1-3-amd64.iso) = 0123456789abcdef0123456789abcdef012345
 	}
 }
 
+func TestFindChecksumOfType(t *testing.T) {
+	text := `
+### MD5SUMS:
+a4c701431cd41f24b6557622d922918e  gparted-live-1.8.1-3-amd64.iso
+
+### SHA1SUMS:
+a75e2a042d4e94f7820aebc758b2e4a6b059f812  gparted-live-1.8.1-3-amd64.iso
+
+### SHA256SUMS:
+3f66b2e10b8bb2c573ed6cdd3a9b54fd0a8e7690634ab6b15c3c8f517992d1a1  gparted-live-1.8.1-3-amd64.iso
+`
+	checksum, ok := findChecksumOfType(text, "gparted-live-1.8.1-3-amd64.iso", "sha256")
+	if !ok {
+		t.Fatal("expected sha256 checksum")
+	}
+	if checksum != "3f66b2e10b8bb2c573ed6cdd3a9b54fd0a8e7690634ab6b15c3c8f517992d1a1" {
+		t.Fatalf("checksum = %q", checksum)
+	}
+}
+
+func TestSelectChecksumMatchOfType(t *testing.T) {
+	text := `
+### MD5SUMS:
+5953b6c1b7b9d5948f8cfcf689c6598a  clonezilla-live-3.3.3-15-amd64.iso
+
+### SHA256SUMS:
+482518ea32af3b82ed15d09e2e7714806775deb62aeed81491e534f6cc6bbc47  clonezilla-live-3.3.3-15-amd64.iso
+`
+	pattern := regexp.MustCompile(`^clonezilla-live-([0-9][A-Za-z0-9_.-]+)-amd64\.iso$`)
+	filename, version, checksum, ok := selectChecksumMatchOfType(text, pattern, "sha256")
+	if !ok {
+		t.Fatal("expected clonezilla sha256 match")
+	}
+	if filename != "clonezilla-live-3.3.3-15-amd64.iso" || version != "3.3.3-15" {
+		t.Fatalf("filename/version = %q/%q", filename, version)
+	}
+	if checksum != "482518ea32af3b82ed15d09e2e7714806775deb62aeed81491e534f6cc6bbc47" {
+		t.Fatalf("checksum = %q", checksum)
+	}
+}
+
 func TestDetectManualProviders(t *testing.T) {
 	cases := []string{
 		"ubuntu-24.04.2-desktop-amd64.iso",
@@ -25,11 +69,22 @@ func TestDetectManualProviders(t *testing.T) {
 		"clonezilla-live-3.3.3-15-amd64.iso",
 		"gparted-live-1.8.1-3-amd64.iso",
 		"tails-amd64-7.10.1.iso",
+		"pop-os_24.04_amd64_nvidia_27.iso",
 		"HBCD_PE_x64.iso",
 	}
 	for _, filename := range cases {
 		if _, ok := Detect(filename); !ok {
 			t.Fatalf("expected %s to be detected", filename)
 		}
+	}
+}
+
+func TestDetectPopOSNVIDIA(t *testing.T) {
+	image, ok := Detect("pop-os_24.04_amd64_nvidia_27.iso")
+	if !ok {
+		t.Fatal("expected Pop!_OS NVIDIA image to be detected")
+	}
+	if image.ID != "popos-nvidia" || image.Flavor != "nvidia" {
+		t.Fatalf("image = %#v", image)
 	}
 }

@@ -11,7 +11,7 @@ import (
 	"ventoy-update/internal/logging"
 )
 
-const UserAgent = "ventoy-update/0.1"
+const UserAgent = "ventoy-update/0.1 (+https://github.com/local/ventoy-update)"
 
 type HTTPClient struct {
 	Client  *http.Client
@@ -21,7 +21,7 @@ type HTTPClient struct {
 
 func NewHTTPClient(timeout time.Duration, retries int, logger *logging.Logger) *HTTPClient {
 	if timeout <= 0 {
-		timeout = 30 * time.Second
+		timeout = 90 * time.Second
 	}
 	if retries < 0 {
 		retries = 0

@@ -80,38 +80,49 @@ func Detect(filename string) (config.Image, bool) {
 }
 
 type checksumEntry struct {
-	Filename string
-	Checksum string
+	Filename     string
+	Checksum     string
+	ChecksumType string
 }
 
 func parseChecksumManifest(text string) []checksumEntry {
 	var entries []checksumEntry
+	currentType := ""
+	reSection := regexp.MustCompile(`(?i)^#+\s*(MD5|SHA1|SHA256|SHA512)SUMS?:`)
 	reBSD := regexp.MustCompile(`(?i)^(SHA(?:1|256|512)|MD5)\s*\(([^)]+)\)\s*=\s*([a-f0-9]+)$`)
 	reLabeled := regexp.MustCompile(`(?i)^([a-f0-9]{32,128})\s+[* ]?(.+)$`)
 	for _, line := range strings.Split(text, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
+			if match := reSection.FindStringSubmatch(line); match != nil {
+				currentType = normalizeChecksumType(match[1])
+			}
 			continue
 		}
 		if match := reBSD.FindStringSubmatch(line); match != nil {
 			entries = append(entries, checksumEntry{
-				Filename: cleanManifestFilename(match[2]),
-				Checksum: strings.ToLower(match[3]),
+				Filename:     cleanManifestFilename(match[2]),
+				Checksum:     strings.ToLower(match[3]),
+				ChecksumType: normalizeChecksumType(match[1]),
 			})
 			continue
 		}
 		if match := reLabeled.FindStringSubmatch(line); match != nil {
+			checksum := strings.ToLower(match[1])
 			entries = append(entries, checksumEntry{
-				Filename: cleanManifestFilename(match[2]),
-				Checksum: strings.ToLower(match[1]),
+				Filename:     cleanManifestFilename(match[2]),
+				Checksum:     checksum,
+				ChecksumType: defaultString(currentType, inferChecksumType(checksum)),
 			})
 			continue
 		}
 		fields := strings.Fields(line)
 		if len(fields) >= 2 && looksLikeHash(fields[0]) {
+			checksum := strings.ToLower(fields[0])
 			entries = append(entries, checksumEntry{
-				Filename: cleanManifestFilename(fields[len(fields)-1]),
-				Checksum: strings.ToLower(fields[0]),
+				Filename:     cleanManifestFilename(fields[len(fields)-1]),
+				Checksum:     checksum,
+				ChecksumType: defaultString(currentType, inferChecksumType(checksum)),
 			})
 		}
 	}
@@ -120,6 +131,19 @@ func parseChecksumManifest(text string) []checksumEntry {
 
 func findChecksum(text, filename string) (string, bool) {
 	for _, entry := range parseChecksumManifest(text) {
+		if entry.Filename == filename || path.Base(entry.Filename) == filename {
+			return entry.Checksum, true
+		}
+	}
+	return "", false
+}
+
+func findChecksumOfType(text, filename, checksumType string) (string, bool) {
+	checksumType = normalizeChecksumType(checksumType)
+	for _, entry := range parseChecksumManifest(text) {
+		if entry.ChecksumType != checksumType {
+			continue
+		}
 		if entry.Filename == filename || path.Base(entry.Filename) == filename {
 			return entry.Checksum, true
 		}
@@ -148,8 +172,56 @@ func looksLikeHash(value string) bool {
 	return true
 }
 
+func normalizeChecksumType(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	value = strings.TrimSuffix(value, "sums")
+	value = strings.TrimSuffix(value, "sum")
+	value = strings.ReplaceAll(value, "-", "")
+	return value
+}
+
+func inferChecksumType(checksum string) string {
+	switch len(checksum) {
+	case 32:
+		return "md5"
+	case 40:
+		return "sha1"
+	case 64:
+		return "sha256"
+	case 128:
+		return "sha512"
+	default:
+		return ""
+	}
+}
+
 func selectChecksumMatch(text string, pattern *regexp.Regexp) (filename, version, checksum string, ok bool) {
 	for _, entry := range parseChecksumManifest(text) {
+		base := path.Base(entry.Filename)
+		match := pattern.FindStringSubmatch(base)
+		if match == nil {
+			continue
+		}
+		candidateVersion := ""
+		if len(match) > 1 {
+			candidateVersion = match[1]
+		}
+		if !ok || compareVersions(candidateVersion, version) > 0 {
+			filename = base
+			version = candidateVersion
+			checksum = entry.Checksum
+			ok = true
+		}
+	}
+	return filename, version, checksum, ok
+}
+
+func selectChecksumMatchOfType(text string, pattern *regexp.Regexp, checksumType string) (filename, version, checksum string, ok bool) {
+	checksumType = normalizeChecksumType(checksumType)
+	for _, entry := range parseChecksumManifest(text) {
+		if entry.ChecksumType != checksumType {
+			continue
+		}
 		base := path.Base(entry.Filename)
 		match := pattern.FindStringSubmatch(base)
 		if match == nil {
@@ -242,6 +314,13 @@ func defaultTrack(track, fallback string) string {
 	return track
 }
 
+func defaultString(value, fallback string) string {
+	if value == "" {
+		return fallback
+	}
+	return value
+}
+
 func releaseURL(base, filename string) string {
 	parsed, err := url.Parse(base)
 	if err != nil {
@@ -249,6 +328,20 @@ func releaseURL(base, filename string) string {
 	}
 	parsed.Path = strings.TrimRight(parsed.Path, "/") + "/" + filename
 	return parsed.String()
+}
+
+func getFirstText(ctx context.Context, client *HTTPClient, bases []string, filename string) (base, text string, err error) {
+	var messages []string
+	for _, candidate := range bases {
+		candidate = strings.TrimRight(candidate, "/") + "/"
+		rawURL := candidate + filename
+		text, err := client.GetText(ctx, rawURL, manifestLimit)
+		if err == nil {
+			return candidate, text, nil
+		}
+		messages = append(messages, fmt.Sprintf("%s: %v", rawURL, err))
+	}
+	return "", "", fmt.Errorf("all release metadata sources failed: %s", strings.Join(messages, "; "))
 }
 
 func headSize(ctx context.Context, client *HTTPClient, rawURL string) int64 {
@@ -388,20 +481,28 @@ func (Debian) Detect(filename string) (config.Image, bool) {
 func (Debian) Latest(ctx context.Context, client *HTTPClient, image config.Image) (Release, error) {
 	arch := defaultArch(image.Arch)
 	flavor := defaultTrack(image.Flavor, "netinst")
-	var base string
+	var bases []string
 	var pattern *regexp.Regexp
 	if flavor == "live-standard" || image.ID == "debian-live-standard" {
-		base = fmt.Sprintf("https://cdimage.debian.org/debian-cd/current-live/%s/iso-hybrid/", url.PathEscape(arch))
+		bases = []string{
+			fmt.Sprintf("https://ftp.us.debian.org/debian-cdimage/current-live/%s/iso-hybrid/", url.PathEscape(arch)),
+			fmt.Sprintf("https://cdimage.debian.org/debian-cd/current-live/%s/iso-hybrid/", url.PathEscape(arch)),
+			fmt.Sprintf("https://cloudfront.debian.net/cdimage/release/current-live/%s/iso-hybrid/", url.PathEscape(arch)),
+		}
 		pattern = regexp.MustCompile(fmt.Sprintf(`^debian-live-([0-9.]+)-%s-standard\.iso$`, regexp.QuoteMeta(arch)))
 	} else {
-		base = fmt.Sprintf("https://cdimage.debian.org/debian-cd/current/%s/iso-cd/", url.PathEscape(arch))
+		bases = []string{
+			fmt.Sprintf("https://ftp.us.debian.org/debian-cdimage/current/%s/iso-cd/", url.PathEscape(arch)),
+			fmt.Sprintf("https://cdimage.debian.org/debian-cd/current/%s/iso-cd/", url.PathEscape(arch)),
+			fmt.Sprintf("https://cloudfront.debian.net/cdimage/release/current/%s/iso-cd/", url.PathEscape(arch)),
+		}
 		pattern = regexp.MustCompile(fmt.Sprintf(`^debian-([0-9.]+)-%s-netinst\.iso$`, regexp.QuoteMeta(arch)))
 	}
-	text, err := client.GetText(ctx, base+"SHA512SUMS", manifestLimit)
+	base, text, err := getFirstText(ctx, client, bases, "SHA512SUMS")
 	if err != nil {
 		return Release{}, err
 	}
-	filename, version, checksum, ok := selectChecksumMatch(text, pattern)
+	filename, version, checksum, ok := selectChecksumMatchOfType(text, pattern, "sha512")
 	if !ok {
 		return Release{}, fmt.Errorf("no Debian %s %s image found in %s", flavor, arch, base+"SHA512SUMS")
 	}
@@ -572,17 +673,26 @@ func (Clonezilla) Detect(filename string) (config.Image, bool) {
 func (Clonezilla) Latest(ctx context.Context, client *HTTPClient, image config.Image) (Release, error) {
 	arch := defaultArch(image.Arch)
 	version := image.Track
+	checksum := ""
+	filename := ""
 	if version == "" || version == "stable" {
-		latest, err := latestClonezillaVersion(ctx, client, arch)
+		latestFilename, latestVersion, latestChecksum, err := latestClonezillaRelease(ctx, client, arch)
 		if err != nil {
 			return Release{}, err
 		}
-		version = latest
+		filename = latestFilename
+		version = latestVersion
+		checksum = latestChecksum
 	}
-	filename := fmt.Sprintf("clonezilla-live-%s-%s.iso", version, arch)
-	checksum, err := clonezillaChecksum(ctx, client, version, filename)
-	if err != nil {
-		return Release{}, err
+	if filename == "" {
+		filename = fmt.Sprintf("clonezilla-live-%s-%s.iso", version, arch)
+	}
+	if checksum == "" {
+		var err error
+		checksum, err = clonezillaChecksum(ctx, client, filename)
+		if err != nil {
+			return Release{}, err
+		}
 	}
 	rawURL := fmt.Sprintf("https://sourceforge.net/projects/clonezilla/files/clonezilla_live_stable/%s/%s/download", url.PathEscape(version), url.PathEscape(filename))
 	return Release{
@@ -596,6 +706,19 @@ func (Clonezilla) Latest(ctx context.Context, client *HTTPClient, image config.I
 		ChecksumType: "sha256",
 		Size:         headSize(ctx, client, rawURL),
 	}, nil
+}
+
+func latestClonezillaRelease(ctx context.Context, client *HTTPClient, arch string) (filename, version, checksum string, err error) {
+	text, err := client.GetText(ctx, "https://clonezilla.org/downloads/stable/checksums.php", manifestLimit)
+	if err != nil {
+		return "", "", "", err
+	}
+	pattern := regexp.MustCompile(fmt.Sprintf(`^clonezilla-live-([0-9][A-Za-z0-9_.-]+)-%s\.iso$`, regexp.QuoteMeta(arch)))
+	filename, version, checksum, ok := selectChecksumMatchOfType(text, pattern, "sha256")
+	if !ok {
+		return "", "", "", fmt.Errorf("no Clonezilla stable %s ISO found in checksums.php", arch)
+	}
+	return filename, version, checksum, nil
 }
 
 func latestClonezillaVersion(ctx context.Context, client *HTTPClient, arch string) (string, error) {
@@ -620,10 +743,10 @@ func latestClonezillaVersion(ctx context.Context, client *HTTPClient, arch strin
 	return match[1], nil
 }
 
-func clonezillaChecksum(ctx context.Context, client *HTTPClient, version, filename string) (string, error) {
+func clonezillaChecksum(ctx context.Context, client *HTTPClient, filename string) (string, error) {
 	urls := []string{
-		fmt.Sprintf("https://sourceforge.net/projects/clonezilla/files/clonezilla_live_stable/%s/SHA256SUMS/download", url.PathEscape(version)),
-		fmt.Sprintf("https://sourceforge.net/projects/clonezilla/files/clonezilla_live_stable/%s/source/SHA256SUMS/download", url.PathEscape(version)),
+		"https://clonezilla.org/downloads/stable/checksums.php",
+		"https://clonezilla.org/downloads/stable/CHECKSUMS.TXT",
 	}
 	var lastErr error
 	for _, rawURL := range urls {
@@ -632,7 +755,7 @@ func clonezillaChecksum(ctx context.Context, client *HTTPClient, version, filena
 			lastErr = err
 			continue
 		}
-		if checksum, ok := findChecksum(text, filename); ok {
+		if checksum, ok := findChecksumOfType(text, filename, "sha256"); ok {
 			return checksum, nil
 		}
 		lastErr = fmt.Errorf("checksum for %s not found in %s", filename, rawURL)
@@ -664,17 +787,26 @@ func (GParted) Detect(filename string) (config.Image, bool) {
 func (GParted) Latest(ctx context.Context, client *HTTPClient, image config.Image) (Release, error) {
 	arch := defaultArch(image.Arch)
 	version := image.Track
+	checksum := ""
+	filename := ""
 	if version == "" || version == "stable" {
-		latest, err := latestGPartedVersion(ctx, client, arch)
+		latestFilename, latestVersion, latestChecksum, err := latestGPartedRelease(ctx, client, arch)
 		if err != nil {
 			return Release{}, err
 		}
-		version = latest
+		filename = latestFilename
+		version = latestVersion
+		checksum = latestChecksum
 	}
-	filename := fmt.Sprintf("gparted-live-%s-%s.iso", version, arch)
-	checksum, err := gpartedChecksum(ctx, client, version, filename)
-	if err != nil {
-		return Release{}, err
+	if filename == "" {
+		filename = fmt.Sprintf("gparted-live-%s-%s.iso", version, arch)
+	}
+	if checksum == "" {
+		var err error
+		checksum, err = gpartedChecksum(ctx, client, filename)
+		if err != nil {
+			return Release{}, err
+		}
 	}
 	rawURL := fmt.Sprintf("https://sourceforge.net/projects/gparted/files/gparted-live-stable/%s/%s/download", url.PathEscape(version), url.PathEscape(filename))
 	return Release{
@@ -690,6 +822,19 @@ func (GParted) Latest(ctx context.Context, client *HTTPClient, image config.Imag
 	}, nil
 }
 
+func latestGPartedRelease(ctx context.Context, client *HTTPClient, arch string) (filename, version, checksum string, err error) {
+	text, err := client.GetText(ctx, "https://gparted.org/gparted-live/stable/CHECKSUMS.TXT", manifestLimit)
+	if err != nil {
+		return "", "", "", err
+	}
+	pattern := regexp.MustCompile(fmt.Sprintf(`^gparted-live-([0-9][A-Za-z0-9_.-]+)-%s\.iso$`, regexp.QuoteMeta(arch)))
+	filename, version, checksum, ok := selectChecksumMatchOfType(text, pattern, "sha256")
+	if !ok {
+		return "", "", "", fmt.Errorf("no GParted stable %s ISO found in CHECKSUMS.TXT", arch)
+	}
+	return filename, version, checksum, nil
+}
+
 func latestGPartedVersion(ctx context.Context, client *HTTPClient, arch string) (string, error) {
 	text, err := client.GetText(ctx, "https://gparted.org/download.php", manifestLimit)
 	if err != nil {
@@ -703,10 +848,9 @@ func latestGPartedVersion(ctx context.Context, client *HTTPClient, arch string) 
 	return match[1], nil
 }
 
-func gpartedChecksum(ctx context.Context, client *HTTPClient, version, filename string) (string, error) {
+func gpartedChecksum(ctx context.Context, client *HTTPClient, filename string) (string, error) {
 	urls := []string{
-		fmt.Sprintf("https://sourceforge.net/projects/gparted/files/gparted-live-stable/%s/CHECKSUMS.TXT/download", url.PathEscape(version)),
-		fmt.Sprintf("https://sourceforge.net/projects/gparted/files/gparted-live-stable/%s/SHA256SUMS/download", url.PathEscape(version)),
+		"https://gparted.org/gparted-live/stable/CHECKSUMS.TXT",
 	}
 	var lastErr error
 	for _, rawURL := range urls {
@@ -715,7 +859,7 @@ func gpartedChecksum(ctx context.Context, client *HTTPClient, version, filename 
 			lastErr = err
 			continue
 		}
-		if checksum, ok := findChecksum(text, filename); ok {
+		if checksum, ok := findChecksumOfType(text, filename, "sha256"); ok {
 			return checksum, nil
 		}
 		lastErr = fmt.Errorf("checksum for %s not found in %s", filename, rawURL)
@@ -800,15 +944,18 @@ func (PopOS) ID() string   { return "popos" }
 func (PopOS) Name() string { return "Pop!_OS" }
 
 func (PopOS) Detect(filename string) (config.Image, bool) {
-	re := regexp.MustCompile(`(?i)^pop[-_]os[_-]([0-9.]+).*?(amd64|x86_64).*?(nvidia|intel|generic)?[^/]*\.iso$`)
-	match := re.FindStringSubmatch(filename)
+	lower := strings.ToLower(filename)
+	if !strings.HasSuffix(lower, ".iso") || !strings.HasPrefix(lower, "pop-os_") && !strings.HasPrefix(lower, "pop_os_") && !strings.HasPrefix(lower, "pop-os-") && !strings.HasPrefix(lower, "pop_os-") {
+		return config.Image{}, false
+	}
+	if !strings.Contains(lower, "amd64") && !strings.Contains(lower, "x86_64") {
+		return config.Image{}, false
+	}
+	match := regexp.MustCompile(`(?i)^pop[-_]os[_-]([0-9]+(?:\.[0-9]+)*)`).FindStringSubmatch(filename)
 	if match == nil {
 		return config.Image{}, false
 	}
-	flavor := strings.ToLower(match[3])
-	if flavor == "" || flavor == "intel" {
-		flavor = "generic"
-	}
+	flavor := popOSFlavorFromFilename(filename, "generic")
 	id := "popos"
 	if flavor == "nvidia" {
 		id = "popos-nvidia"
@@ -825,18 +972,18 @@ func (PopOS) Detect(filename string) (config.Image, bool) {
 }
 
 func (PopOS) Latest(ctx context.Context, client *HTTPClient, image config.Image) (Release, error) {
-	text, err := client.GetText(ctx, "https://system76.com/pop/download/", manifestLimit)
+	text, err := client.GetText(ctx, "https://system76.com/download-pop/", manifestLimit)
 	if err != nil {
-		return Release{}, err
+		return Release{}, Skipf("Pop!_OS official download page unavailable: %v", err)
 	}
-	flavor := defaultTrack(image.Flavor, "generic")
+	flavor := popOSFlavorFromFilename(image.Filename, defaultTrack(image.Flavor, "generic"))
 	isoURL, pos := selectPopOSURL(text, flavor, image.Track)
 	if isoURL == "" {
-		return Release{}, fmt.Errorf("could not find Pop!_OS %s ISO URL on official download page", flavor)
+		return Release{}, Skipf("Pop!_OS %s ISO URL is not exposed in the official page HTML", flavor)
 	}
 	checksum := nearestSHA256(text, pos)
 	if checksum == "" {
-		return Release{}, fmt.Errorf("could not find Pop!_OS %s checksum on official download page", flavor)
+		return Release{}, Skipf("Pop!_OS %s checksum is not exposed near the ISO URL on the official page", flavor)
 	}
 	filename := path.Base(mustURLPath(isoURL))
 	version := firstMatch(filename, `(?i)pop[-_]os[_-]([0-9.]+)`)
@@ -851,6 +998,17 @@ func (PopOS) Latest(ctx context.Context, client *HTTPClient, image config.Image)
 		ChecksumType: "sha256",
 		Size:         headSize(ctx, client, isoURL),
 	}, nil
+}
+
+func popOSFlavorFromFilename(filename, fallback string) string {
+	lower := strings.ToLower(filename)
+	if strings.Contains(lower, "nvidia") {
+		return "nvidia"
+	}
+	if fallback == "" || fallback == "intel" {
+		return "generic"
+	}
+	return fallback
 }
 
 func selectPopOSURL(text, flavor, track string) (string, int) {
@@ -926,11 +1084,11 @@ func (Hirens) Detect(filename string) (config.Image, bool) {
 func (Hirens) Latest(ctx context.Context, client *HTTPClient, image config.Image) (Release, error) {
 	text, err := client.GetText(ctx, "https://www.hirensbootcd.org/download/", manifestLimit)
 	if err != nil {
-		return Release{}, err
+		return Release{}, Skipf("Hiren's BootCD PE official download page unavailable: %v", err)
 	}
 	checksum := firstMatch(text, `(?i)ISO SHA-?256\s*(?:</[^>]+>\s*)*(?:\||:)?\s*([a-f0-9]{64})`, `(?i)SHA-?256[^a-f0-9]+([a-f0-9]{64})`)
 	if checksum == "" {
-		return Release{}, fmt.Errorf("could not find Hiren's BootCD PE SHA256 checksum on official download page")
+		return Release{}, Skipf("Hiren's BootCD PE SHA256 checksum is not exposed in the official page HTML")
 	}
 	version := firstMatch(text, `(?i)Hiren'?s BootCD PE x64 \(v([^)]+)\)`, `(?i)\(v([0-9.]+)\)`)
 	isoURL := firstMatch(text, `href=["']([^"']*HBCD_PE_x64[^"']*\.iso[^"']*)["']`)
