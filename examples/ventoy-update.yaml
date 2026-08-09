@@ -1,0 +1,85 @@
+version: 1
+images:
+  - id: ubuntu-desktop
+    name: Ubuntu Desktop
+    provider: ubuntu
+    track: "24.04"
+    arch: amd64
+    flavor: desktop
+    filename: ubuntu-24.04.2-desktop-amd64.iso
+  - id: ubuntu-server
+    name: Ubuntu Server
+    provider: ubuntu
+    track: "24.04"
+    arch: amd64
+    flavor: server
+    filename: ubuntu-24.04.2-live-server-amd64.iso
+  - id: debian-netinst
+    name: Debian Netinst
+    provider: debian
+    track: stable
+    arch: amd64
+    flavor: netinst
+    filename: debian-12.9.0-amd64-netinst.iso
+  - id: debian-live-standard
+    name: Debian Live Standard
+    provider: debian
+    track: stable
+    arch: amd64
+    flavor: live-standard
+    filename: debian-live-12.9.0-amd64-standard.iso
+  - id: kali-live
+    name: Kali Live
+    provider: kali
+    track: current
+    arch: amd64
+    flavor: live
+    filename: kali-linux-2026.2-live-amd64.iso
+  - id: linux-mint-cinnamon
+    name: Linux Mint Cinnamon
+    provider: linuxmint
+    track: stable
+    arch: amd64
+    flavor: cinnamon
+    filename: linuxmint-22.3-cinnamon-64bit.iso
+  - id: clonezilla
+    name: Clonezilla Live
+    provider: clonezilla
+    track: stable
+    arch: amd64
+    flavor: live
+    filename: clonezilla-live-3.3.3-15-amd64.iso
+  - id: gparted
+    name: GParted Live
+    provider: gparted
+    track: stable
+    arch: amd64
+    flavor: live
+    filename: gparted-live-1.8.1-3-amd64.iso
+  - id: tails
+    name: Tails
+    provider: tails
+    track: stable
+    arch: amd64
+    flavor: iso
+    filename: tails-amd64-7.10.1.iso
+  - id: popos-nvidia
+    name: Pop!_OS NVIDIA
+    provider: popos
+    track: "24.04"
+    arch: amd64
+    flavor: nvidia
+    filename: pop-os_24.04_amd64_nvidia.iso
+  - id: hirens
+    name: Hiren's BootCD PE
+    provider: hirens
+    track: stable
+    arch: amd64
+    flavor: pe
+    filename: HBCD_PE_x64.iso
+manual:
+  - filename: Win10_22H2_English_x32v1.iso
+  - filename: Win10_22H2_English_x64v1.iso
+  - filename: Win11_24H2_English_x64.iso
+  - filename: WinPE_Win11_22H2_WinRE_KB5026372.iso
+
