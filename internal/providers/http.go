@@ -22,10 +22,12 @@ type HTTPClient struct {
 type ProbeResult struct {
 	URL           string
 	FinalURL      string
+	Method        string
 	Status        string
 	StatusCode    int
 	ContentLength int64
 	ContentType   string
+	ContentRange  string
 }
 
 func NewHTTPClient(timeout time.Duration, retries int, logger *logging.Logger) *HTTPClient {
@@ -80,10 +82,19 @@ func (c *HTTPClient) Head(ctx context.Context, rawURL string) (*http.Response, e
 func (c *HTTPClient) ProbeDownload(ctx context.Context, rawURL string) (ProbeResult, error) {
 	resp, err := c.Head(ctx, rawURL)
 	if err != nil {
-		return ProbeResult{URL: rawURL}, err
+		rangeResp, rangeErr := c.Do(ctx, http.MethodGet, rawURL, map[string]string{"Range": "bytes=0-0"}, nil)
+		if rangeErr != nil {
+			return ProbeResult{URL: rawURL}, err
+		}
+		defer rangeResp.Body.Close()
+		return probeResultFromResponse(rawURL, http.MethodGet, rangeResp), nil
 	}
 	defer resp.Body.Close()
 
+	return probeResultFromResponse(rawURL, http.MethodHead, resp), nil
+}
+
+func probeResultFromResponse(rawURL, method string, resp *http.Response) ProbeResult {
 	finalURL := rawURL
 	if resp.Request != nil && resp.Request.URL != nil {
 		finalURL = resp.Request.URL.String()
@@ -91,11 +102,13 @@ func (c *HTTPClient) ProbeDownload(ctx context.Context, rawURL string) (ProbeRes
 	return ProbeResult{
 		URL:           rawURL,
 		FinalURL:      finalURL,
+		Method:        method,
 		Status:        resp.Status,
 		StatusCode:    resp.StatusCode,
 		ContentLength: resp.ContentLength,
 		ContentType:   resp.Header.Get("Content-Type"),
-	}, nil
+		ContentRange:  resp.Header.Get("Content-Range"),
+	}
 }
 
 func (c *HTTPClient) Do(ctx context.Context, method, rawURL string, headers map[string]string, body []byte) (*http.Response, error) {

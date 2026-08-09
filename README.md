@@ -50,7 +50,7 @@ provided.
 ./ventoy-update scan
 ./ventoy-update check
 ./ventoy-update update
-./ventoy-update validate --manifest examples/ventoy-update.yaml
+./ventoy-update validate --manifest examples/ventoy-update.yaml --allow-skips
 ```
 
 With an explicit target:
@@ -128,13 +128,16 @@ Pull requests run `.github/workflows/pr-validation.yml`. The workflow builds the
 CLI, runs the Go test suite, and runs:
 
 ```bash
-./ventoy-update validate --manifest examples/ventoy-update.yaml --timeout 90s
+./ventoy-update validate --manifest examples/ventoy-update.yaml --timeout 90s --allow-skips
 ```
 
 The validation command resolves each managed provider from the manifest,
 confirms release filenames and checksums are present, and probes each ISO or IMG
-URL with `HEAD` only. It does not download image bodies. Windows installer ISOs
-and custom WinPE images stay manual-only and are reported as `MANUAL`.
+URL with `HEAD` first. If a server rejects `HEAD`, it falls back to a one-byte
+range request. It does not download image bodies. Windows installer ISOs and
+custom WinPE images stay manual-only and are reported as `MANUAL`.
+Providers without current machine-readable metadata, such as Pop!_OS, are
+reported as `SKIP` and are allowed by CI only when `--allow-skips` is present.
 
 ## Local Verification
 

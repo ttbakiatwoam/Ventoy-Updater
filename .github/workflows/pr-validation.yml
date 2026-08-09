@@ -33,5 +33,4 @@ jobs:
         run: go build -o ventoy-update ./cmd/ventoy-update
 
       - name: Validate ISO availability without downloading images
-        run: ./ventoy-update validate --manifest examples/ventoy-update.yaml --timeout 90s --summary "$GITHUB_STEP_SUMMARY"
-
+        run: ./ventoy-update validate --manifest examples/ventoy-update.yaml --timeout 90s --allow-skips --summary "$GITHUB_STEP_SUMMARY"

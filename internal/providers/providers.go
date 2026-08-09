@@ -300,6 +300,15 @@ func firstMatch(text string, patterns ...string) string {
 	return ""
 }
 
+func htmlToText(text string) string {
+	text = regexp.MustCompile(`(?is)<(br|p|div|tr|td|th|li|h[1-6])\b[^>]*>`).ReplaceAllString(text, "\n")
+	text = regexp.MustCompile(`(?is)<[^>]+>`).ReplaceAllString(text, " ")
+	text = html.UnescapeString(text)
+	text = regexp.MustCompile(`[ \t\r\f\v]+`).ReplaceAllString(text, " ")
+	text = regexp.MustCompile(` *\n *`).ReplaceAllString(text, "\n")
+	return strings.TrimSpace(text)
+}
+
 func defaultArch(arch string) string {
 	if arch == "" {
 		return "amd64"
@@ -559,7 +568,7 @@ func (Kali) Latest(ctx context.Context, client *HTTPClient, image config.Image) 
 	if !ok {
 		return Release{}, fmt.Errorf("no Kali %s %s image found in %s", flavor, arch, base+"SHA256SUMS")
 	}
-	rawURL := releaseURL(base, filename)
+	rawURL := kaliDownloadURL(version, filename)
 	return Release{
 		ImageID:      image.ID,
 		Provider:     "kali",
@@ -571,6 +580,10 @@ func (Kali) Latest(ctx context.Context, client *HTTPClient, image config.Image) 
 		ChecksumType: "sha256",
 		Size:         headSize(ctx, client, rawURL),
 	}, nil
+}
+
+func kaliDownloadURL(version, filename string) string {
+	return fmt.Sprintf("https://cdimage.kali.org/kali-%s/%s", url.PathEscape(version), url.PathEscape(filename))
 }
 
 type LinuxMint struct{}
@@ -675,14 +688,16 @@ func (Clonezilla) Latest(ctx context.Context, client *HTTPClient, image config.I
 	version := image.Track
 	checksum := ""
 	filename := ""
+	baseURL := ""
 	if version == "" || version == "stable" {
-		latestFilename, latestVersion, latestChecksum, err := latestClonezillaRelease(ctx, client, arch)
+		latestFilename, latestVersion, latestChecksum, latestBaseURL, err := latestClonezillaRelease(ctx, client, arch)
 		if err != nil {
 			return Release{}, err
 		}
 		filename = latestFilename
 		version = latestVersion
 		checksum = latestChecksum
+		baseURL = latestBaseURL
 	}
 	if filename == "" {
 		filename = fmt.Sprintf("clonezilla-live-%s-%s.iso", version, arch)
@@ -694,7 +709,10 @@ func (Clonezilla) Latest(ctx context.Context, client *HTTPClient, image config.I
 			return Release{}, err
 		}
 	}
-	rawURL := fmt.Sprintf("https://sourceforge.net/projects/clonezilla/files/clonezilla_live_stable/%s/%s/download", url.PathEscape(version), url.PathEscape(filename))
+	rawURL := releaseURL(baseURL, filename)
+	if baseURL == "" {
+		rawURL = fmt.Sprintf("https://sourceforge.net/projects/clonezilla/files/clonezilla_live_stable/%s/%s/download", url.PathEscape(version), url.PathEscape(filename))
+	}
 	return Release{
 		ImageID:      image.ID,
 		Provider:     "clonezilla",
@@ -708,17 +726,22 @@ func (Clonezilla) Latest(ctx context.Context, client *HTTPClient, image config.I
 	}, nil
 }
 
-func latestClonezillaRelease(ctx context.Context, client *HTTPClient, arch string) (filename, version, checksum string, err error) {
-	text, err := client.GetText(ctx, "https://clonezilla.org/downloads/stable/checksums.php", manifestLimit)
+func latestClonezillaRelease(ctx context.Context, client *HTTPClient, arch string) (filename, version, checksum, baseURL string, err error) {
+	bases := []string{
+		"https://free.nchc.org.tw/clonezilla-live/stable/",
+		"https://clonezilla.nchc.org.tw/clonezilla-live/stable/",
+		"https://clonezilla.org/downloads/stable/",
+	}
+	base, text, err := getFirstText(ctx, client, bases, "SHA256SUMS")
 	if err != nil {
-		return "", "", "", err
+		return "", "", "", "", err
 	}
 	pattern := regexp.MustCompile(fmt.Sprintf(`^clonezilla-live-([0-9][A-Za-z0-9_.-]+)-%s\.iso$`, regexp.QuoteMeta(arch)))
 	filename, version, checksum, ok := selectChecksumMatchOfType(text, pattern, "sha256")
 	if !ok {
-		return "", "", "", fmt.Errorf("no Clonezilla stable %s ISO found in checksums.php", arch)
+		return "", "", "", "", fmt.Errorf("no Clonezilla stable %s ISO found in SHA256SUMS", arch)
 	}
-	return filename, version, checksum, nil
+	return filename, version, checksum, base, nil
 }
 
 func latestClonezillaVersion(ctx context.Context, client *HTTPClient, arch string) (string, error) {
@@ -745,6 +768,8 @@ func latestClonezillaVersion(ctx context.Context, client *HTTPClient, arch strin
 
 func clonezillaChecksum(ctx context.Context, client *HTTPClient, filename string) (string, error) {
 	urls := []string{
+		"https://free.nchc.org.tw/clonezilla-live/stable/SHA256SUMS",
+		"https://clonezilla.nchc.org.tw/clonezilla-live/stable/SHA256SUMS",
 		"https://clonezilla.org/downloads/stable/checksums.php",
 		"https://clonezilla.org/downloads/stable/CHECKSUMS.TXT",
 	}
@@ -1086,11 +1111,12 @@ func (Hirens) Latest(ctx context.Context, client *HTTPClient, image config.Image
 	if err != nil {
 		return Release{}, Skipf("Hiren's BootCD PE official download page unavailable: %v", err)
 	}
-	checksum := firstMatch(text, `(?i)ISO SHA-?256\s*(?:</[^>]+>\s*)*(?:\||:)?\s*([a-f0-9]{64})`, `(?i)SHA-?256[^a-f0-9]+([a-f0-9]{64})`)
+	plainText := htmlToText(text)
+	checksum := firstMatch(plainText, `(?i)ISO SHA-?256\s*(?:\||:)?\s*([a-f0-9]{64})`, `(?i)SHA-?256[^a-f0-9]+([a-f0-9]{64})`)
 	if checksum == "" {
 		return Release{}, Skipf("Hiren's BootCD PE SHA256 checksum is not exposed in the official page HTML")
 	}
-	version := firstMatch(text, `(?i)Hiren'?s BootCD PE x64 \(v([^)]+)\)`, `(?i)\(v([0-9.]+)\)`)
+	version := firstMatch(plainText, `(?i)Hiren'?s BootCD PE x64 \(v([^)]+)\)`, `(?i)\(v([0-9.]+)\)`)
 	isoURL := firstMatch(text, `href=["']([^"']*HBCD_PE_x64[^"']*\.iso[^"']*)["']`)
 	if isoURL == "" {
 		isoURL = "https://www.hirensbootcd.org/files/HBCD_PE_x64.iso"

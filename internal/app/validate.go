@@ -169,10 +169,11 @@ func checksumLength(checksumType string) int {
 }
 
 func printValidationResults(w io.Writer, results []validationResult) {
-	fmt.Fprintf(w, "%-28s %-34s %-11s %-9s %s\n", "IMAGE", "AVAILABLE", "HTTP", "STATUS", "DETAIL")
-	fmt.Fprintf(w, "%-28s %-34s %-11s %-9s %s\n", strings.Repeat("-", 28), strings.Repeat("-", 34), strings.Repeat("-", 11), strings.Repeat("-", 9), strings.Repeat("-", 32))
+	fmt.Fprintf(w, "%-28s %-34s %-11s %-6s %-9s %s\n", "IMAGE", "AVAILABLE", "HTTP", "PROBE", "STATUS", "DETAIL")
+	fmt.Fprintf(w, "%-28s %-34s %-11s %-6s %-9s %s\n", strings.Repeat("-", 28), strings.Repeat("-", 34), strings.Repeat("-", 11), strings.Repeat("-", 6), strings.Repeat("-", 9), strings.Repeat("-", 32))
 	for _, result := range results {
 		httpStatus := ""
+		probeMethod := ""
 		detail := ""
 		available := result.Release.Filename
 		if result.Manual {
@@ -184,14 +185,19 @@ func printValidationResults(w io.Writer, results []validationResult) {
 		}
 		if result.Probe.Status != "" {
 			httpStatus = result.Probe.Status
+			probeMethod = result.Probe.Method
 		}
 		if result.Probe.ContentLength > 0 {
 			detail = fmt.Sprintf("%d bytes", result.Probe.ContentLength)
 		}
-		fmt.Fprintf(w, "%-28s %-34s %-11s %-9s %s\n",
+		if result.Probe.ContentRange != "" {
+			detail = result.Probe.ContentRange
+		}
+		fmt.Fprintf(w, "%-28s %-34s %-11s %-6s %-9s %s\n",
 			truncate(result.Image.Name, 28),
 			truncate(available, 34),
 			truncate(httpStatus, 11),
+			truncate(probeMethod, 6),
 			result.Status,
 			truncate(detail, 80),
 		)
@@ -210,10 +216,10 @@ func appendValidationSummary(path string, results []validationResult, opts optio
 
 	fmt.Fprintln(file, "## Ventoy ISO Availability Validation")
 	fmt.Fprintln(file)
-	fmt.Fprintln(file, "This check resolves provider metadata and probes ISO URLs with `HEAD` only. It does not download ISO or IMG bodies.")
+	fmt.Fprintln(file, "This check resolves provider metadata and probes ISO URLs with `HEAD` first, falling back to a one-byte range request when a server rejects `HEAD`. It does not download ISO or IMG bodies.")
 	fmt.Fprintln(file)
-	fmt.Fprintln(file, "| Image | Available | HTTP | Status | Detail |")
-	fmt.Fprintln(file, "| --- | --- | --- | --- | --- |")
+	fmt.Fprintln(file, "| Image | Available | HTTP | Probe | Status | Detail |")
+	fmt.Fprintln(file, "| --- | --- | --- | --- | --- | --- |")
 	for _, result := range results {
 		available := result.Release.Filename
 		if result.Manual {
@@ -230,10 +236,14 @@ func appendValidationSummary(path string, results []validationResult, opts optio
 		if result.Probe.ContentLength > 0 {
 			detail = fmt.Sprintf("%d bytes", result.Probe.ContentLength)
 		}
-		fmt.Fprintf(file, "| %s | %s | %s | %s | %s |\n",
+		if result.Probe.ContentRange != "" {
+			detail = result.Probe.ContentRange
+		}
+		fmt.Fprintf(file, "| %s | %s | %s | %s | %s | %s |\n",
 			escapeMarkdown(result.Image.Name),
 			escapeMarkdown(available),
 			escapeMarkdown(httpStatus),
+			escapeMarkdown(result.Probe.Method),
 			escapeMarkdown(result.Status),
 			escapeMarkdown(detail),
 		)
