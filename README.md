@@ -1,7 +1,8 @@
 # ventoy-update
 
-**License:** [Creative Commons Attribution-ShareAlike 4.0 International](LICENSE.txt)  
 **Last validation result:** [![PR Validation](https://github.com/ttbakiatwoam/Ventoy-Updater/actions/workflows/pr-validation.yml/badge.svg)](https://github.com/ttbakiatwoam/Ventoy-Updater/actions/workflows/pr-validation.yml)
+
+**License:** [Creative Commons Attribution-ShareAlike 4.0 International](LICENSE.txt)
 
 `ventoy-update` is a manifest-driven updater for a Ventoy USB image partition.
 It scans the existing image set, checks upstream releases, and downloads updates
@@ -49,7 +50,7 @@ provided.
 ./ventoy-update scan
 ./ventoy-update check
 ./ventoy-update update
-./ventoy-update validate --manifest examples/ventoy-update.yaml
+./ventoy-update validate --manifest examples/ventoy-update.yaml --allow-skips
 ```
 
 With an explicit target:
@@ -114,10 +115,14 @@ manifests with the same field names.
 
 - Ubuntu uses `SHA256SUMS` from `releases.ubuntu.com`.
 - Debian uses `SHA512SUMS` from `cdimage.debian.org`.
-- Kali uses `SHA256SUMS` from `kali.download/base-images/current`.
+- Kali uses `SHA256SUMS` from `kali.download/base-images/current`; live
+  images are reported as `SKIP` when Kali exposes only torrent downloads for the
+  current live release.
 - Linux Mint uses `sha256sum.txt` from `pub.linuxmint.io`.
 - Tails uses the official `latest.json` release metadata.
 - GParted and Clonezilla use project checksum files linked from official pages.
+  GParted falls back to the official SourceForge release listing when
+  `gparted.org` blocks checksum access from CI.
 - Pop!_OS and Hiren's BootCD PE use their official download pages for release
   metadata because no stable checksum manifest endpoint is currently published.
 
@@ -127,13 +132,17 @@ Pull requests run `.github/workflows/pr-validation.yml`. The workflow builds the
 CLI, runs the Go test suite, and runs:
 
 ```bash
-./ventoy-update validate --manifest examples/ventoy-update.yaml --timeout 90s
+./ventoy-update validate --manifest examples/ventoy-update.yaml --timeout 90s --allow-skips
 ```
 
 The validation command resolves each managed provider from the manifest,
 confirms release filenames and checksums are present, and probes each ISO or IMG
-URL with `HEAD` only. It does not download image bodies. Windows installer ISOs
-and custom WinPE images stay manual-only and are reported as `MANUAL`.
+URL with `HEAD` first. If a server rejects `HEAD`, it falls back to a one-byte
+range request. It does not download image bodies. Windows installer ISOs and
+custom WinPE images stay manual-only and are reported as `MANUAL`.
+Providers without current machine-readable metadata or direct ISO availability,
+such as Pop!_OS or Kali live during torrent-only releases, are reported as
+`SKIP` and are allowed by CI only when `--allow-skips` is present.
 
 ## Local Verification
 

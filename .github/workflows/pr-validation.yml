@@ -1,0 +1,36 @@
+name: PR Validation
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Build, Test, And Probe ISOs
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run tests
+        run: go test ./...
+
+      - name: Build CLI
+        run: go build -o ventoy-update ./cmd/ventoy-update
+
+      - name: Validate ISO availability without downloading images
+        run: ./ventoy-update validate --manifest examples/ventoy-update.yaml --timeout 90s --allow-skips --summary "$GITHUB_STEP_SUMMARY"

@@ -300,6 +300,15 @@ func firstMatch(text string, patterns ...string) string {
 	return ""
 }
 
+func htmlToText(text string) string {
+	text = regexp.MustCompile(`(?is)<(br|p|div|tr|td|th|li|h[1-6])\b[^>]*>`).ReplaceAllString(text, "\n")
+	text = regexp.MustCompile(`(?is)<[^>]+>`).ReplaceAllString(text, " ")
+	text = html.UnescapeString(text)
+	text = regexp.MustCompile(`[ \t\r\f\v]+`).ReplaceAllString(text, " ")
+	text = regexp.MustCompile(` *\n *`).ReplaceAllString(text, "\n")
+	return strings.TrimSpace(text)
+}
+
 func defaultArch(arch string) string {
 	if arch == "" {
 		return "amd64"
@@ -559,7 +568,10 @@ func (Kali) Latest(ctx context.Context, client *HTTPClient, image config.Image) 
 	if !ok {
 		return Release{}, fmt.Errorf("no Kali %s %s image found in %s", flavor, arch, base+"SHA256SUMS")
 	}
-	rawURL := releaseURL(base, filename)
+	rawURL, err := kaliDownloadURL(ctx, client, version, filename)
+	if err != nil {
+		return Release{}, err
+	}
 	return Release{
 		ImageID:      image.ID,
 		Provider:     "kali",
@@ -571,6 +583,34 @@ func (Kali) Latest(ctx context.Context, client *HTTPClient, image config.Image) 
 		ChecksumType: "sha256",
 		Size:         headSize(ctx, client, rawURL),
 	}, nil
+}
+
+func kaliDownloadURL(ctx context.Context, client *HTTPClient, version, filename string) (string, error) {
+	var lastErr error
+	for _, candidate := range kaliDownloadCandidates(version, filename) {
+		if _, err := client.ProbeDownload(ctx, candidate); err == nil {
+			return candidate, nil
+		} else {
+			lastErr = err
+		}
+	}
+	if strings.Contains(filename, "-live-") {
+		return "", Skipf("Kali lists %s in SHA256SUMS, but official mirrors currently expose the live image as torrent-only", filename)
+	}
+	return "", fmt.Errorf("Kali lists %s in SHA256SUMS, but no official direct ISO URL responded: %v", filename, lastErr)
+}
+
+func kaliDownloadCandidates(version, filename string) []string {
+	escapedVersion := url.PathEscape(version)
+	escapedFilename := url.PathEscape(filename)
+	return []string{
+		fmt.Sprintf("https://cdimage.kali.org/kali-%s/%s", escapedVersion, escapedFilename),
+		fmt.Sprintf("https://cdimage.kali.org/current/%s", escapedFilename),
+		fmt.Sprintf("https://archive.kali.org/kali-images/kali-%s/%s", escapedVersion, escapedFilename),
+		fmt.Sprintf("https://archive.kali.org/kali-images/current/%s", escapedFilename),
+		fmt.Sprintf("https://kali.download/base-images/kali-%s/%s", escapedVersion, escapedFilename),
+		fmt.Sprintf("https://kali.download/base-images/current/%s", escapedFilename),
+	}
 }
 
 type LinuxMint struct{}
@@ -675,14 +715,16 @@ func (Clonezilla) Latest(ctx context.Context, client *HTTPClient, image config.I
 	version := image.Track
 	checksum := ""
 	filename := ""
+	baseURL := ""
 	if version == "" || version == "stable" {
-		latestFilename, latestVersion, latestChecksum, err := latestClonezillaRelease(ctx, client, arch)
+		latestFilename, latestVersion, latestChecksum, latestBaseURL, err := latestClonezillaRelease(ctx, client, arch)
 		if err != nil {
 			return Release{}, err
 		}
 		filename = latestFilename
 		version = latestVersion
 		checksum = latestChecksum
+		baseURL = latestBaseURL
 	}
 	if filename == "" {
 		filename = fmt.Sprintf("clonezilla-live-%s-%s.iso", version, arch)
@@ -694,7 +736,10 @@ func (Clonezilla) Latest(ctx context.Context, client *HTTPClient, image config.I
 			return Release{}, err
 		}
 	}
-	rawURL := fmt.Sprintf("https://sourceforge.net/projects/clonezilla/files/clonezilla_live_stable/%s/%s/download", url.PathEscape(version), url.PathEscape(filename))
+	rawURL := releaseURL(baseURL, filename)
+	if baseURL == "" {
+		rawURL = fmt.Sprintf("https://sourceforge.net/projects/clonezilla/files/clonezilla_live_stable/%s/%s/download", url.PathEscape(version), url.PathEscape(filename))
+	}
 	return Release{
 		ImageID:      image.ID,
 		Provider:     "clonezilla",
@@ -708,17 +753,22 @@ func (Clonezilla) Latest(ctx context.Context, client *HTTPClient, image config.I
 	}, nil
 }
 
-func latestClonezillaRelease(ctx context.Context, client *HTTPClient, arch string) (filename, version, checksum string, err error) {
-	text, err := client.GetText(ctx, "https://clonezilla.org/downloads/stable/checksums.php", manifestLimit)
+func latestClonezillaRelease(ctx context.Context, client *HTTPClient, arch string) (filename, version, checksum, baseURL string, err error) {
+	bases := []string{
+		"https://free.nchc.org.tw/clonezilla-live/stable/",
+		"https://clonezilla.nchc.org.tw/clonezilla-live/stable/",
+		"https://clonezilla.org/downloads/stable/",
+	}
+	base, text, err := getFirstText(ctx, client, bases, "SHA256SUMS")
 	if err != nil {
-		return "", "", "", err
+		return "", "", "", "", err
 	}
 	pattern := regexp.MustCompile(fmt.Sprintf(`^clonezilla-live-([0-9][A-Za-z0-9_.-]+)-%s\.iso$`, regexp.QuoteMeta(arch)))
 	filename, version, checksum, ok := selectChecksumMatchOfType(text, pattern, "sha256")
 	if !ok {
-		return "", "", "", fmt.Errorf("no Clonezilla stable %s ISO found in checksums.php", arch)
+		return "", "", "", "", fmt.Errorf("no Clonezilla stable %s ISO found in SHA256SUMS", arch)
 	}
-	return filename, version, checksum, nil
+	return filename, version, checksum, base, nil
 }
 
 func latestClonezillaVersion(ctx context.Context, client *HTTPClient, arch string) (string, error) {
@@ -745,6 +795,8 @@ func latestClonezillaVersion(ctx context.Context, client *HTTPClient, arch strin
 
 func clonezillaChecksum(ctx context.Context, client *HTTPClient, filename string) (string, error) {
 	urls := []string{
+		"https://free.nchc.org.tw/clonezilla-live/stable/SHA256SUMS",
+		"https://clonezilla.nchc.org.tw/clonezilla-live/stable/SHA256SUMS",
 		"https://clonezilla.org/downloads/stable/checksums.php",
 		"https://clonezilla.org/downloads/stable/CHECKSUMS.TXT",
 	}
@@ -825,12 +877,12 @@ func (GParted) Latest(ctx context.Context, client *HTTPClient, image config.Imag
 func latestGPartedRelease(ctx context.Context, client *HTTPClient, arch string) (filename, version, checksum string, err error) {
 	text, err := client.GetText(ctx, "https://gparted.org/gparted-live/stable/CHECKSUMS.TXT", manifestLimit)
 	if err != nil {
-		return "", "", "", err
+		return latestGPartedReleaseFromSourceForge(ctx, client, arch, err)
 	}
 	pattern := regexp.MustCompile(fmt.Sprintf(`^gparted-live-([0-9][A-Za-z0-9_.-]+)-%s\.iso$`, regexp.QuoteMeta(arch)))
 	filename, version, checksum, ok := selectChecksumMatchOfType(text, pattern, "sha256")
 	if !ok {
-		return "", "", "", fmt.Errorf("no GParted stable %s ISO found in CHECKSUMS.TXT", arch)
+		return latestGPartedReleaseFromSourceForge(ctx, client, arch, fmt.Errorf("no GParted stable %s ISO found in CHECKSUMS.TXT", arch))
 	}
 	return filename, version, checksum, nil
 }
@@ -864,7 +916,64 @@ func gpartedChecksum(ctx context.Context, client *HTTPClient, filename string) (
 		}
 		lastErr = fmt.Errorf("checksum for %s not found in %s", filename, rawURL)
 	}
-	return "", lastErr
+	match := regexp.MustCompile(`^gparted-live-(.+)-[A-Za-z0-9_]+\.iso$`).FindStringSubmatch(filename)
+	if match != nil {
+		if checksum, err := gpartedChecksumFromSourceForge(ctx, client, match[1], filename); err == nil {
+			return checksum, nil
+		} else {
+			lastErr = err
+		}
+	}
+	return "", Skipf("GParted checksum metadata unavailable for %s: %v", filename, lastErr)
+}
+
+func latestGPartedReleaseFromSourceForge(ctx context.Context, client *HTTPClient, arch string, priorErr error) (filename, version, checksum string, err error) {
+	const sourceForgeStable = "https://sourceforge.net/projects/gparted/files/gparted-live-stable/"
+	text, err := client.GetText(ctx, sourceForgeStable, manifestLimit)
+	if err != nil {
+		return "", "", "", Skipf("GParted stable metadata unavailable: %v; fallback failed: %v", priorErr, err)
+	}
+	pattern := regexp.MustCompile(fmt.Sprintf(`gparted-live-([0-9][A-Za-z0-9_.-]+)-%s\.iso`, regexp.QuoteMeta(arch)))
+	for _, match := range pattern.FindAllStringSubmatch(text, -1) {
+		candidateVersion := match[1]
+		if version == "" || compareVersions(candidateVersion, version) > 0 {
+			version = candidateVersion
+			filename = fmt.Sprintf("gparted-live-%s-%s.iso", version, arch)
+		}
+	}
+	if filename == "" {
+		return "", "", "", Skipf("GParted stable %s ISO was not found in SourceForge fallback after CHECKSUMS.TXT failed: %v", arch, priorErr)
+	}
+	checksum, err = gpartedChecksumFromSourceForge(ctx, client, version, filename)
+	if err != nil {
+		return "", "", "", Skipf("GParted checksum metadata unavailable for %s: %v", filename, err)
+	}
+	return filename, version, checksum, nil
+}
+
+func gpartedChecksumFromSourceForge(ctx context.Context, client *HTTPClient, version, filename string) (string, error) {
+	rawURL := fmt.Sprintf("https://sourceforge.net/projects/gparted/files/gparted-live-stable/%s/", url.PathEscape(version))
+	text, err := client.GetText(ctx, rawURL, manifestLimit)
+	if err != nil {
+		return "", err
+	}
+	if checksum, ok := findChecksumOfType(text, filename, "sha256"); ok {
+		return checksum, nil
+	}
+	if checksum, ok := findGPartedChecksumInSourceForgeText(text, filename); ok {
+		return checksum, nil
+	}
+	return "", fmt.Errorf("sha256 checksum for %s not found in %s", filename, rawURL)
+}
+
+func findGPartedChecksumInSourceForgeText(text, filename string) (string, bool) {
+	text = htmlToText(text)
+	pattern := regexp.MustCompile(`(?i)([a-f0-9]{64})\s+` + regexp.QuoteMeta(filename))
+	match := pattern.FindStringSubmatch(text)
+	if match == nil {
+		return "", false
+	}
+	return strings.ToLower(match[1]), true
 }
 
 type Tails struct{}
@@ -1086,11 +1195,12 @@ func (Hirens) Latest(ctx context.Context, client *HTTPClient, image config.Image
 	if err != nil {
 		return Release{}, Skipf("Hiren's BootCD PE official download page unavailable: %v", err)
 	}
-	checksum := firstMatch(text, `(?i)ISO SHA-?256\s*(?:</[^>]+>\s*)*(?:\||:)?\s*([a-f0-9]{64})`, `(?i)SHA-?256[^a-f0-9]+([a-f0-9]{64})`)
+	plainText := htmlToText(text)
+	checksum := firstMatch(plainText, `(?i)ISO SHA-?256\s*(?:\||:)?\s*([a-f0-9]{64})`, `(?i)SHA-?256[^a-f0-9]+([a-f0-9]{64})`)
 	if checksum == "" {
 		return Release{}, Skipf("Hiren's BootCD PE SHA256 checksum is not exposed in the official page HTML")
 	}
-	version := firstMatch(text, `(?i)Hiren'?s BootCD PE x64 \(v([^)]+)\)`, `(?i)\(v([0-9.]+)\)`)
+	version := firstMatch(plainText, `(?i)Hiren'?s BootCD PE x64 \(v([^)]+)\)`, `(?i)\(v([0-9.]+)\)`)
 	isoURL := firstMatch(text, `href=["']([^"']*HBCD_PE_x64[^"']*\.iso[^"']*)["']`)
 	if isoURL == "" {
 		isoURL = "https://www.hirensbootcd.org/files/HBCD_PE_x64.iso"
@@ -1098,7 +1208,11 @@ func (Hirens) Latest(ctx context.Context, client *HTTPClient, image config.Image
 		base, _ := url.Parse("https://www.hirensbootcd.org/download/")
 		isoURL = base.ResolveReference(parsed).String()
 	}
-	filename := path.Base(mustURLPath(isoURL))
+	downloadURL, err := hirensDownloadURL(ctx, client, isoURL)
+	if err != nil {
+		return Release{}, err
+	}
+	filename := path.Base(mustURLPath(downloadURL))
 	if filename == "" || filename == "." || filename == "/" {
 		filename = "HBCD_PE_x64.iso"
 	}
@@ -1108,9 +1222,38 @@ func (Hirens) Latest(ctx context.Context, client *HTTPClient, image config.Image
 		Name:         imageName("hirens"),
 		Version:      version,
 		Filename:     filename,
-		URL:          isoURL,
+		URL:          downloadURL,
 		Checksum:     strings.ToLower(checksum),
 		ChecksumType: "sha256",
-		Size:         headSize(ctx, client, isoURL),
+		Size:         headSize(ctx, client, downloadURL),
 	}, nil
+}
+
+func hirensDownloadURL(ctx context.Context, client *HTTPClient, primaryURL string) (string, error) {
+	var lastErr error
+	for _, candidate := range hirensDownloadCandidates(primaryURL) {
+		if _, err := client.ProbeDownload(ctx, candidate); err == nil {
+			return candidate, nil
+		} else {
+			lastErr = err
+		}
+	}
+	return "", Skipf("Hiren's BootCD PE mirrors are not currently reachable without downloading the ISO: %v", lastErr)
+}
+
+func hirensDownloadCandidates(primaryURL string) []string {
+	candidates := []string{primaryURL}
+	for _, candidate := range []string{
+		"https://hirensbootcd.mirror.wearetriple.com/HBCD_PE_x64.iso",
+		"https://hbcd.mirror.garr.it/mirrors/hbcd/HBCD_PE_x64.iso",
+		"https://mirrors.uni-ruse.bg/hirens-bootcd/HBCD_PE_x64.iso",
+		"https://mirror.internet.asn.au/pub/hbcd/HBCD_PE_x64.iso",
+		"https://www2.frugalware.org/mirror/hirensbootcd.org/HBCD_PE_x64.iso",
+		"https://mirror.lstn.net/hirensbootcd/HBCD_PE_x64.iso",
+	} {
+		if candidate != primaryURL {
+			candidates = append(candidates, candidate)
+		}
+	}
+	return candidates
 }
