@@ -66,11 +66,17 @@ func ListImages(target string) ([]string, error) {
 	var files []string
 	err := filepath.WalkDir(target, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
+			if shouldIgnoreWalkError(path, d) {
+				if d != nil && d.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
 			return err
 		}
 		name := d.Name()
 		if d.IsDir() {
-			if name == ToolDirName || isMacMetadataName(name) {
+			if name == ToolDirName || isMacProtectedDirName(name) || isMacMetadataName(name) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -90,6 +96,12 @@ func ListImages(target string) ([]string, error) {
 func Cleanup(target string, removeStaging bool, logger *logging.Logger) error {
 	return filepath.WalkDir(target, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
+			if shouldIgnoreWalkError(path, d) {
+				if d != nil && d.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
 			return err
 		}
 		name := d.Name()
@@ -101,6 +113,9 @@ func Cleanup(target string, removeStaging bool, logger *logging.Logger) error {
 				return filepath.SkipDir
 			}
 			return nil
+		}
+		if d.IsDir() && isMacProtectedDirName(name) {
+			return filepath.SkipDir
 		}
 		if isMacMetadataName(name) {
 			if logger != nil {
@@ -124,12 +139,29 @@ func Cleanup(target string, removeStaging bool, logger *logging.Logger) error {
 	})
 }
 
+func shouldIgnoreWalkError(path string, d fs.DirEntry) bool {
+	name := filepath.Base(path)
+	if d != nil {
+		name = d.Name()
+	}
+	return name == ToolDirName || isMacProtectedDirName(name) || isMacMetadataName(name)
+}
+
+func isMacProtectedDirName(name string) bool {
+	switch name {
+	case ".TemporaryItems", ".Spotlight-V100", ".Trashes", ".fseventsd":
+		return true
+	default:
+		return false
+	}
+}
+
 func isMacMetadataName(name string) bool {
 	if strings.HasPrefix(name, "._") {
 		return true
 	}
 	switch name {
-	case ".DS_Store", ".Spotlight-V100", ".Trashes", ".fseventsd":
+	case ".DS_Store":
 		return true
 	default:
 		return false

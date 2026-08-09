@@ -115,4 +115,3 @@ Run:
 go test ./...
 go build ./cmd/ventoy-update
 ```
-
