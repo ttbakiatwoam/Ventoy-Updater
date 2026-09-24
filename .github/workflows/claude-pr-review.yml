@@ -17,7 +17,14 @@ concurrency:
 
 jobs:
   review:
-    if: ${{ github.event.issue.pull_request != null && github.event.comment.user.login == 'chatgpt-codex-connector[bot]' }}
+    if: >-
+      ${{
+        github.event.issue.pull_request != null &&
+        github.event.issue.state == 'open' &&
+        github.event.comment.user.login == 'chatgpt-codex-connector[bot]' &&
+        contains(github.event.comment.body, 'codex-pull-request-review-summary') &&
+        contains(github.event.comment.body, '**Completed**')
+      }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
