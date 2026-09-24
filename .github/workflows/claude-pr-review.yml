@@ -1,0 +1,93 @@
+name: Claude PR Review
+
+on:
+  issue_comment:
+    types: [created, edited]
+
+permissions:
+  actions: write
+  contents: read
+  issues: write
+  pull-requests: read
+  id-token: write
+
+concurrency:
+  group: claude-ventoy-${{ github.event.issue.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    if: ${{ github.event.issue.pull_request != null && github.event.comment.user.login == 'chatgpt-codex-connector[bot]' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Require completed Codex review
+        id: gate
+        uses: actions/github-script@v7
+        env:
+          PR_NUMBER: ${{ github.event.issue.number }}
+        with:
+          script: |
+            const owner=context.repo.owner, repo=context.repo.repo, number=Number(process.env.PR_NUMBER);
+            core.setOutput('run','false');
+            const {data:pr}=await github.rest.pulls.get({owner,repo,pull_number:number});
+            if(pr.state!=='open'||pr.draft||pr.base.ref!=='master') return;
+            if(pr.user?.login!=='ttbakiatwoam'||pr.head.repo?.full_name!==`${owner}/${repo}`) return;
+            const comments=await github.paginate(github.rest.issues.listComments,{owner,repo,issue_number:number,per_page:100});
+            const prefixes=[7,8,10,12].map((length)=>pr.head.sha.slice(0,length).toLowerCase());
+            const complete=comments.some((comment)=>{
+              if(comment.user?.login!=='chatgpt-codex-connector[bot]') return false;
+              const body=comment.body||'', lower=body.toLowerCase();
+              return body.includes('codex-pull-request-review-summary') &&
+                /\\*\\*Completed\\*\\*/i.test(body) &&
+                prefixes.some((prefix)=>lower.includes(`\`${prefix}\``));
+            });
+            if(!complete) return;
+            const query=`query($owner:String!,$repo:String!,$number:Int!,$cursor:String){repository(owner:$owner,name:$repo){pullRequest(number:$number){reviewThreads(first:100,after:$cursor){nodes{isResolved comments(first:100){nodes{author{login}}}} pageInfo{hasNextPage endCursor}}}}}`;
+            let cursor=null, unresolved=0;
+            do{
+              const result=await github.graphql(query,{owner,repo,number,cursor});
+              const page=result.repository.pullRequest.reviewThreads;
+              unresolved+=(page.nodes||[]).filter((thread)=>!thread.isResolved&&(thread.comments?.nodes||[]).some((c)=>c.author?.login==='chatgpt-codex-connector[bot]')).length;
+              cursor=page.pageInfo.hasNextPage?page.pageInfo.endCursor:null;
+            }while(cursor);
+            if(unresolved) return;
+            core.setOutput('run','true'); core.setOutput('head_sha',pr.head.sha); core.setOutput('head_ref',pr.head.ref); core.setOutput('pr_number',String(number));
+
+      - uses: actions/checkout@v6
+        if: ${{ steps.gate.outputs.run == 'true' }}
+        with:
+          ref: ${{ steps.gate.outputs.head_sha }}
+          fetch-depth: 0
+
+      - name: Review Ventoy-Updater with Claude
+        id: claude_review
+        if: ${{ steps.gate.outputs.run == 'true' }}
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.ANDREW_CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          track_progress: true
+          prompt: |
+            Perform a read-only code review of PR #${{ steps.gate.outputs.pr_number }} in Ventoy-Updater.
+            Report concrete P0-P2 correctness, Go/runtime, ISO/download validation, security, data-loss,
+            and risky-test-coverage issues only. Do not modify files or push commits.
+            Set reviewed_head to exactly ${{ steps.gate.outputs.head_sha }} and CLEAN only if no P0-P2 findings remain.
+          claude_args: |
+            --json-schema '{"type":"object","properties":{"reviewed_head":{"type":"string"},"review_result":{"type":"string","enum":["CLEAN","FINDINGS"]},"summary":{"type":"string"}},"required":["reviewed_head","review_result","summary"],"additionalProperties":false}'
+
+      - name: Record and dispatch
+        if: ${{ steps.gate.outputs.run == 'true' && steps.claude_review.conclusion == 'success' }}
+        uses: actions/github-script@v7
+        env:
+          RAW: ${{ steps.claude_review.outputs.structured_output }}
+          HEAD_SHA: ${{ steps.gate.outputs.head_sha }}
+          HEAD_REF: ${{ steps.gate.outputs.head_ref }}
+          PR_NUMBER: ${{ steps.gate.outputs.pr_number }}
+        with:
+          script: |
+            let review; try{review=JSON.parse(process.env.RAW||'{}');}catch{core.setFailed('Invalid Claude output.');return;}
+            if(review.reviewed_head!==process.env.HEAD_SHA){core.setFailed('Claude reviewed a stale head.');return;}
+            await github.rest.issues.createComment({owner:context.repo.owner,repo:context.repo.repo,issue_number:Number(process.env.PR_NUMBER),body:['<!-- claude-pr-review-state -->',`CLAUDE_REVIEW_HEAD: \`${process.env.HEAD_SHA}\``,`CLAUDE_REVIEW_RESULT: ${review.review_result}`].join('\n')});
+            if(review.review_result!=='CLEAN'){core.setFailed('Claude reported P0-P2 findings.');return;}
+            await github.rest.actions.createWorkflowDispatch({owner:context.repo.owner,repo:context.repo.repo,workflow_id:'pr-validation.yml',ref:process.env.HEAD_REF,inputs:{pr_number:process.env.PR_NUMBER,head_sha:process.env.HEAD_SHA}});
